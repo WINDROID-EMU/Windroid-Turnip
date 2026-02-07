@@ -244,7 +244,7 @@ compile_mesa "Turnip Autotuner (No A8xx)" "V69-Autotuner-A6xx" "PixelyIon Autotu
 # 3. Main Build (Vanilla)
 cd "$workdir"
 rm -rf mesa
-git clone --depth 100 -b main https://gitlab.freedesktop.org/mesa/mesa.git mesa
+git clone --depth 100 -b main https://github.com/WINDROID-EMU/Windroid-Mesa.git mesa
 cd mesa
 git config user.email "ci@turnip.builder" && git config user.name "Turnip CI Builder"
 compile_mesa "Turnip Main Vanilla" "V69-Main-Vanilla" "Pure Mesa Main (No patches)"
