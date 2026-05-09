@@ -28,12 +28,19 @@ prepare_workdir(){
     mkdir -p "$workdir" && cd "$workdir"
 
     if [ ! -d "$ndkver" ]; then
+        echo "Baixando NDK..."
         curl -sL "https://dl.google.com/android/repository/${ndkver}-linux.zip" -o "${ndkver}-linux.zip" &> /dev/null
         unzip -q "${ndkver}-linux.zip" &> /dev/null
+        rm "${ndkver}-linux.zip"
     fi
 
-    rm -rf "$srcfolder"
-    git clone "$mesasrc" --depth=1 --no-single-branch "$srcfolder"
+    if [ ! -d "$srcfolder" ]; then
+        echo "Baixando código fonte do Mesa..."
+        git clone "$mesasrc" --depth=1 --no-single-branch "$srcfolder"
+    else
+        echo "Código fonte já existe, pulando download."
+    fi
+    
     cd "$srcfolder"
     
     echo "#define TUGEN8_DRV_VERSION \"\"" > ./src/freedreno/vulkan/tu_version.h
@@ -41,7 +48,7 @@ prepare_workdir(){
 
 build_lib_for_android(){
     cd "$workdir/$srcfolder"
-    git checkout "origin/$1"
+    # git checkout -f "origin/$1" # Comentado para preservar as otimizações manuais
 
     sed -i 's/ (%s)//g' src/freedreno/vulkan/tu_device.cc || true
     sed -i 's/ (%s)//g' src/freedreno/vulkan/tu_device.c || true
@@ -143,6 +150,8 @@ EOF
 
     zip -9 "/tmp/a8xx-$1-V${BUILD_VERSION}.zip" libvulkan_freedreno.so meta.json
     cp "/tmp/a8xx-$1-V${BUILD_VERSION}.zip" "$workdir/"
+    cp "/tmp/a8xx-$1-V${BUILD_VERSION}.zip" "./"
+    echo "Driver gerado em: $(pwd)/a8xx-$1-V${BUILD_VERSION}.zip"
 }
 
 run_all
