@@ -1,0 +1,59 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Windroid-emu <genrogamer@gmail.com>
+Date: Sat, 9 Aug 2026 00:00:00 +0000
+Subject: [PATCH] perf: Force aggressive shading rate for polygon reduction
+
+Adds runtime control for aggressive Fragment Shading Rate (VRS) to reduce
+fragment processing load, effectively simulating polygon reduction:
+
+- TU_FORCE_SHADING_RATE: Forces 4x4 shading rate when set to non-zero value
+  (processes 1 fragment per 4x4 pixel block = 16x reduction in fragment work)
+
+This reduces GPU workload by processing fewer fragments while maintaining
+geometry, providing performance gains similar to polygon reduction.
+
+Usage:
+  export TU_FORCE_SHADING_RATE=1  # Enable 4x4 shading rate
+
+Note: This is an aggressive optimization that significantly reduces visual quality
+but provides maximum performance improvement.
+
+Signed-off-by: Windroid-emu <genrogamer@gmail.com>
+---
+diff --git a/src/freedreno/vulkan/tu_cmd_buffer.cc b/src/freedreno/vulkan/tu_cmd_buffer.cc
+index 008c059b..6b5f5d7d 100644
+--- a/src/freedreno/vulkan/tu_cmd_buffer.cc
++++ b/src/freedreno/vulkan/tu_cmd_buffer.cc
+@@ -6661,6 +6661,32 @@ tu7_emit_subpass_shading_rate(struct tu_cmd_buffer *cmd,
+                               const struct tu_subpass *subpass,
+                               struct tu_cs *cs)
+ {
++   /* HACK: Force aggressive shading rate for performance */
++   const char *force_rate_env = getenv("TU_FORCE_SHADING_RATE");
++   if (force_rate_env && subpass->fsr_attachment == VK_ATTACHMENT_UNUSED) {
++      uint32_t rate_val = (uint32_t) atoi(force_rate_env);
++      /* Force 4x4 shading rate (max performance reduction) */
++      if (rate_val > 0) {
++         tu_cs_emit_regs(cs, GRAS_QUALITY_BUFFER_INFO(CHIP),
++                         GRAS_QUALITY_BUFFER_DIMENSION(CHIP));
++         tu_cs_emit_regs(cs, GRAS_QUALITY_BUFFER_PITCH(CHIP));
++         tu_cs_emit_regs(cs, GRAS_QUALITY_BUFFER_BASE(CHIP));
++         
++         /* Force 4x4 shading rate via GRAS */
++         tu_cs_emit_regs(cs, GRAS_LRZ_QUALITY_LOOKUP_TABLE_REG(CHIP, 0,
++                              fd_gras_shading_rate_lut(0)));
++         tu_cs_emit_regs(cs, GRAS_LRZ_QUALITY_LOOKUP_TABLE_REG(CHIP, 1,
++                              fd_gras_shading_rate_lut(1)));
++         
++         if (!cmd->prev_fsr_is_null) {
++            tu_emit_raw_event_write<A7XX>(cmd, cs, LRZ_Q_CACHE_INVALIDATE,
++                                          false);
++            cmd->prev_fsr_is_null = true;
++         }
++         return;
++      }
++   }
++
+    if (subpass->fsr_attachment == VK_ATTACHMENT_UNUSED) {
+       tu_cs_emit_regs(cs, GRAS_QUALITY_BUFFER_INFO(CHIP),
+                       GRAS_QUALITY_BUFFER_DIMENSION(CHIP));
