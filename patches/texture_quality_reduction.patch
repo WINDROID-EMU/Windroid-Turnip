@@ -1,0 +1,85 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Windroid-emu <genrogamer@gmail.com>
+Date: Sat, 9 Aug 2026 00:00:00 +0000
+Subject: [PATCH] perf: Texture quality reduction via environment variables
+
+Adds runtime control for texture quality reduction through environment variables:
+
+- TU_TEXTURE_LOD_BIAS: Adjusts texture LOD bias to force lower resolution mipmaps
+  (positive values = lower quality, higher performance)
+- TU_FORCE_MIP_LEVEL: Forces image views to use higher mip levels directly
+  (positive values = lower resolution textures)
+
+Usage examples:
+  export TU_TEXTURE_LOD_BIAS=1.0  # Use lower mipmaps
+  export TU_FORCE_MIP_LEVEL=1     # Skip base mip level
+
+Signed-off-by: Windroid-emu <genrogamer@gmail.com>
+---
+diff --git a/src/freedreno/vulkan/tu_image.cc b/src/freedreno/vulkan/tu_image.cc
+index 35aa429a..6928649a 100644
+--- a/src/freedreno/vulkan/tu_image.cc
++++ b/src/freedreno/vulkan/tu_image.cc
+@@ -221,12 +221,22 @@ tu_image_view_init(struct tu_device *device,
+    vk_component_mapping_to_pipe_swizzle(pCreateInfo->components,
+                                         iview->swizzle);
+ 
++   uint32_t base_miplevel = range->baseMipLevel;
++   uint32_t level_count = vk_image_subresource_level_count(&image->vk, range);
++   const char *force_mip_env = getenv("TU_FORCE_MIP_LEVEL");
++   if (force_mip_env) {
++      uint32_t offset = (uint32_t) atoi(force_mip_env);
++      if (level_count > 1 && offset > 0) {
++         base_miplevel = MIN2(base_miplevel + offset, level_count - 1);
++      }
++   }
++
+    struct fdl_view_args args = {};
+    args.iova = image->iova;
+    args.base_array_layer = range->baseArrayLayer;
+-   args.base_miplevel = range->baseMipLevel;
++   args.base_miplevel = base_miplevel;
+    args.layer_count = vk_image_subresource_layer_count(&image->vk, range);
+-   args.level_count = vk_image_subresource_level_count(&image->vk, range);
++   args.level_count = level_count;
+    args.min_lod_clamp = iview->vk.min_lod;
+    args.format = tu_format_for_aspect(format, aspect_mask);
+    vk_component_mapping_to_pipe_swizzle(pCreateInfo->components, args.swiz);
+diff --git a/src/freedreno/vulkan/tu_sampler.cc b/src/freedreno/vulkan/tu_sampler.cc
+index c92cae7c..67c80ddb 100644
+--- a/src/freedreno/vulkan/tu_sampler.cc
++++ b/src/freedreno/vulkan/tu_sampler.cc
+@@ -81,7 +81,14 @@ tu_CreateSampler(VkDevice _device,
+    unsigned aniso = pCreateInfo->anisotropyEnable ?
+       util_last_bit(MIN2((uint32_t)pCreateInfo->maxAnisotropy >> 1, 8)) : 0;
+    bool miplinear = (pCreateInfo->mipmapMode == VK_SAMPLER_MIPMAP_MODE_LINEAR);
+-   float min_lod = CLAMP(pCreateInfo->minLod, 0.0f, 4095.0f / 256.0f);
++   float custom_lod_bias = 0.0f;
++   const char *lod_env = getenv("TU_TEXTURE_LOD_BIAS");
++   if (lod_env) {
++      custom_lod_bias = (float) atof(lod_env);
++   }
++
++   float mip_lod_bias = pCreateInfo->mipLodBias + custom_lod_bias;
++   float min_lod = CLAMP(pCreateInfo->minLod + custom_lod_bias, 0.0f, 4095.0f / 256.0f);
+    float max_lod = CLAMP(pCreateInfo->maxLod, 0.0f, 4095.0f / 256.0f);
+ 
+    sampler->vk.ycbcr_conversion = ycbcr_conversion ?
+@@ -95,7 +102,7 @@ tu_CreateSampler(VkDevice _device,
+          A8XX_TEX_SAMP_0_WRAP_S(tu6_tex_wrap(pCreateInfo->addressModeU)) |
+          A8XX_TEX_SAMP_0_WRAP_T(tu6_tex_wrap(pCreateInfo->addressModeV)) |
+          A8XX_TEX_SAMP_0_WRAP_R(tu6_tex_wrap(pCreateInfo->addressModeW)) |
+-         A8XX_TEX_SAMP_0_LOD_BIAS(pCreateInfo->mipLodBias) |
++         A8XX_TEX_SAMP_0_LOD_BIAS(mip_lod_bias) |
+          A8XX_TEX_SAMP_0_ANISO((enum a6xx_tex_aniso)aniso);
+ 
+       sampler->descriptor[1] =
+@@ -129,7 +136,7 @@ tu_CreateSampler(VkDevice _device,
+          A6XX_TEX_SAMP_0_WRAP_S(tu6_tex_wrap(pCreateInfo->addressModeU)) |
+          A6XX_TEX_SAMP_0_WRAP_T(tu6_tex_wrap(pCreateInfo->addressModeV)) |
+          A6XX_TEX_SAMP_0_WRAP_R(tu6_tex_wrap(pCreateInfo->addressModeW)) |
+-         A6XX_TEX_SAMP_0_LOD_BIAS(pCreateInfo->mipLodBias);
++         A6XX_TEX_SAMP_0_LOD_BIAS(mip_lod_bias);
+       sampler->descriptor[1] =
+          COND(pCreateInfo->flags & VK_SAMPLER_CREATE_NON_SEAMLESS_CUBE_MAP_BIT_EXT,
+             A6XX_TEX_SAMP_1_CUBEMAPSEAMLESSFILTOFF) |
