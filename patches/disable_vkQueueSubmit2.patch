@@ -1,0 +1,32 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Windroid-emu <genrogamer@gmail.com>
+Date: Sat, 9 Aug 2026 00:00:00 +0000
+Subject: [PATCH] FIX: Disable VK_KHR_synchronization2 to fix vkQueueSubmit2 crash
+
+The winevulkan loader in Wine is crashing when calling vkQueueSubmit2 with
+the Turnip driver. This is a compatibility issue between winevulkan and
+the VK_KHR_synchronization2 extension implementation.
+
+By disabling VK_KHR_synchronization2, we force the use of the legacy
+vkQueueSubmit API which is more stable and compatible with Wine's loader.
+
+This fixes the assertion failure:
+  0144:err:msvcrt:_wassert (L"!status && \"vkQueueSubmit2\"",L"../dlls/winevulkan/loader_thunks.c",6273)
+
+Signed-off-by: Windroid-emu <genrogamer@gmail.com>
+---
+ src/freedreno/vulkan/tu_device.cc | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/freedreno/vulkan/tu_device.cc b/src/freedreno/vulkan/tu_device.cc
+index 8f40f68453d..04428441f93 100644
+--- a/src/freedreno/vulkan/tu_device.cc
++++ b/src/freedreno/vulkan/tu_device.cc
+@@ -253,7 +253,7 @@ tu_get_physical_device_features(struct tu_physical_device *pdevice,
+       .KHR_swapchain_maintenance1 = true,
+ #endif
+-      .KHR_synchronization2 = true,
++      .KHR_synchronization2 = false,
+       .KHR_timeline_semaphore = true,
+       .KHR_unified_image_layouts = true,
+       .KHR_uniform_buffer_standard_layout = true,

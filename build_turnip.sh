@@ -53,7 +53,10 @@ build_lib_for_android(){
     sed -i 's/ (%s)//g' src/freedreno/vulkan/tu_device.cc || true
     sed -i 's/ (%s)//g' src/freedreno/vulkan/tu_device.c || true
 
-    sed -i '/a7xx_gen1 = GPUProps(/a \        has_early_preamble = False,' src/freedreno/common/freedreno_devices.py || true
+    # FIX: Disable VK_KHR_synchronization2 to fix winevulkan vkQueueSubmit2 crash
+    sed -i 's/\.KHR_synchronization2 = true,/.KHR_synchronization2 = false,/g' src/freedreno/vulkan/tu_device.cc || true
+
+    grep -q "has_early_preamble = False," src/freedreno/common/freedreno_devices.py || sed -i '/a7xx_gen1 = GPUProps(/a \        has_early_preamble = False,' src/freedreno/common/freedreno_devices.py || true
     sed -i 's/typedef const native_handle_t\* buffer_handle_t;/typedef void\* buffer_handle_t;/g' include/android_stub/cutils/native_handle.h || true
     sed -i 's/, hnd->handle/, (void \*)hnd->handle/g' src/util/u_gralloc/u_gralloc_fallback.c || true
     sed -i 's/native_buffer->handle->/((const native_handle_t \*)native_buffer->handle)->/g' src/vulkan/runtime/vk_android.c || true
