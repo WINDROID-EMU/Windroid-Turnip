@@ -5,7 +5,8 @@ deps="git meson ninja patchelf unzip curl pip flex bison zip glslangValidator py
 workdir="$(pwd)/turnip_workdir"
 ndkver="android-ndk-r29"
 ndk="$workdir/$ndkver/toolchains/llvm/prebuilt/linux-x86_64/bin"
-mesasrc="https://github.com/whitebelyash/mesa-tu8.git"
+mesasrc="https://gitlab.freedesktop.org/mesa/mesa.git"
+mesatag="mesa-25.1.4"
 srcfolder="mesa"
 BUILD_VERSION="${BUILD_VERSION:-1.0}"
 
@@ -36,7 +37,7 @@ prepare_workdir(){
 
     if [ ! -d "$srcfolder" ]; then
         echo "Baixando código fonte do Mesa..."
-        git clone "$mesasrc" --depth=1 --no-single-branch "$srcfolder"
+        git clone "$mesasrc" --depth=1 --branch "$mesatag" "$srcfolder"
     else
         echo "Código fonte já existe, pulando download."
     fi
