@@ -2,11 +2,15 @@ diff --git a/src/freedreno/vulkan/tu_cmd_buffer.cc b/src/freedreno/vulkan/tu_cmd
 index 2652eb1..83b74d9 100644
 --- a/src/freedreno/vulkan/tu_cmd_buffer.cc
 +++ b/src/freedreno/vulkan/tu_cmd_buffer.cc
-@@ -985,6 +985,8 @@ static bool
+@@ -985,6 +985,11 @@ static bool
  use_sysmem_rendering(struct tu_cmd_buffer *cmd,
                       struct tu_renderpass_result **autotune_result)
  {
-+   return true;
++   /* HACK: Force sysmem rendering via environment variable */
++   const char *force_sysmem_env = getenv("TU_FORCE_SYSMEM");
++   if (force_sysmem_env && atoi(force_sysmem_env) == 1) {
++      return true;
++   }
 +
     if (TU_DEBUG(SYSMEM)) {
        cmd->state.rp.gmem_disable_reason = "TU_DEBUG(SYSMEM)";

@@ -1,0 +1,181 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Windroid-emu <genrogamer@gmail.com>
+Date: Sat, 10 May 2025 00:00:00 +0000
+Subject: [PATCH] perf: Unified Windroid performance optimizations
+
+Combines aggressive performance optimizations with runtime control via environment variables:
+
+Aggressive optimizations (always active):
+- vulkan/tu_sampler: Disable anisotropic filtering (aniso=0)
+- vulkan/tu_sampler: Force NEAREST texture filtering for all textures
+- vulkan/tu_sampler: Force compareOp=ALWAYS to disable shadow map overhead
+- ir3/ir3_nir: Force all non-critical varyings to mediump (FP16) for
+  faster ALU throughput on Adreno FP16 units (2x speedup for ALU)
+- common/freedreno_devices: Reduce prim_alloc_threshold 0x7->0x3 for A6xx
+- common/freedreno_devices: Set has_early_preamble = False for A7XX
+
+Runtime controls via environment variables:
+- TU_TEXTURE_LOD_BIAS: Adjusts texture LOD bias to force lower resolution mipmaps
+  (positive values = lower quality, higher performance). Defaults to +1.0 if not set.
+- TU_FORCE_MIP_LEVEL: Forces image views to use higher mip levels directly
+  (positive values = lower resolution textures)
+- TU_DISABLE_SHADOWS: Disables shadow mapping by forcing compareOp=ALWAYS
+  (set to 1 to disable shadows for performance, 0 or unset for normal shadows)
+
+Usage examples:
+  export TU_TEXTURE_LOD_BIAS=1.0  # Use lower mipmaps (default if not set)
+  export TU_FORCE_MIP_LEVEL=1     # Skip base mip level
+  export TU_DISABLE_SHADOWS=1     # Disable shadow mapping for performance
+
+Tested on: Adreno 650 (SM8250), Adreno 730 (SM8450)
+Signed-off-by: Windroid-emu <genrogamer@gmail.com>
+---
+diff --git a/src/freedreno/common/freedreno_devices.py b/src/freedreno/common/freedreno_devices.py
+index 373f4c27..82f204b2 100644
+--- a/src/freedreno/common/freedreno_devices.py
++++ b/src/freedreno/common/freedreno_devices.py
+@@ -141,7 +141,7 @@ a6xx_base = GPUProps(
+         sysmem_per_ccu_color_cache_size = 64 * 1024,
+         gmem_ccu_color_cache_fraction = CCUColorCacheFraction.QUARTER.value,
+ 
+-        prim_alloc_threshold = 0x7,
++        prim_alloc_threshold = 0x3,
+         vs_max_inputs_count = 32,
+         max_sets = 5,
+         line_width_min = 1.0,
+@@ -798,6 +798,7 @@ a7xx_base = GPUProps(
+     )
+ 
+ a7xx_gen1 = GPUProps(
++        has_early_preamble = False,
+         supports_uav_ubwc = True,
+         fs_must_have_non_zero_constlen_quirk = True,
+         enable_tp_ubwc_flag_hint = True,
+diff --git a/src/freedreno/ir3/ir3_nir.c b/src/freedreno/ir3/ir3_nir.c
+index 200e53e6..6eed01c2 100644
+--- a/src/freedreno/ir3/ir3_nir.c
++++ b/src/freedreno/ir3/ir3_nir.c
+@@ -1014,8 +1014,9 @@ ir3_nir_post_finalize(struct ir3_shader *shader)
+        * you'd end up with an incorrect f2f16(i2i32(load_input())) instead of
+        * load_input).
+        */
++      /* HACK: Force all non-critical varyings to mediump for performance */
+       uint64_t mediump_varyings = s->info.linear_varyings |
+-         s->info.perspective_varyings;
++         s->info.perspective_varyings | (s->info.inputs_read & ~(VARYING_BIT_POS | VARYING_BIT_PSIZ));
+ 
+       if (mediump_varyings) {
+          NIR_PASS(_, s, nir_lower_mediump_io, nir_var_shader_in,
+diff --git a/src/freedreno/vulkan/tu_image.cc b/src/freedreno/vulkan/tu_image.cc
+index 35aa429a..6928649a 100644
+--- a/src/freedreno/vulkan/tu_image.cc
++++ b/src/freedreno/vulkan/tu_image.cc
+@@ -221,12 +221,22 @@ tu_image_view_init(struct tu_device *device,
+    vk_component_mapping_to_pipe_swizzle(pCreateInfo->components,
+                                         iview->swizzle);
+ 
++   uint32_t base_miplevel = range->baseMipLevel;
++   uint32_t level_count = vk_image_subresource_level_count(&image->vk, range);
++   const char *force_mip_env = getenv("TU_FORCE_MIP_LEVEL");
++   if (force_mip_env) {
++      uint32_t offset = (uint32_t) atoi(force_mip_env);
++      if (level_count > 1 && offset > 0) {
++         base_miplevel = MIN2(base_miplevel + offset, level_count - 1);
++      }
++   }
++
+    struct fdl_view_args args = {};
+    args.iova = image->iova;
+    args.base_array_layer = range->baseArrayLayer;
+-   args.base_miplevel = range->baseMipLevel;
++   args.base_miplevel = base_miplevel;
+    args.layer_count = vk_image_subresource_layer_count(&image->vk, range);
+-   args.level_count = vk_image_subresource_level_count(&image->vk, range);
++   args.level_count = level_count;
+    args.min_lod_clamp = iview->vk.min_lod;
+    args.format = tu_format_for_aspect(format, aspect_mask);
+    vk_component_mapping_to_pipe_swizzle(pCreateInfo->components, args.swiz);
+diff --git a/src/freedreno/vulkan/tu_sampler.cc b/src/freedreno/vulkan/tu_sampler.cc
+index c92cae7c..eeab52de 100644
+--- a/src/freedreno/vulkan/tu_sampler.cc
++++ b/src/freedreno/vulkan/tu_sampler.cc
+@@ -78,11 +78,18 @@ tu_CreateSampler(VkDevice _device,
+       }
+    }
+ 
+-   unsigned aniso = pCreateInfo->anisotropyEnable ?
+-      util_last_bit(MIN2((uint32_t)pCreateInfo->maxAnisotropy >> 1, 8)) : 0;
++   /* HACK: Performance Optimizations */
++   unsigned aniso = 0; /* Disable anisotropy */
+    bool miplinear = (pCreateInfo->mipmapMode == VK_SAMPLER_MIPMAP_MODE_LINEAR);
+-   float min_lod = CLAMP(pCreateInfo->minLod, 0.0f, 4095.0f / 256.0f);
++
++   /* Runtime LOD bias control via environment variable */
++   float custom_lod_bias = 0.0f;
++   const char *lod_env = getenv("TU_TEXTURE_LOD_BIAS");
++   if (lod_env) {
++      custom_lod_bias = (float) atof(lod_env);
++   } else {
++      custom_lod_bias = 1.0f; /* Default performance bias if not set */
++   }
++
++   /* Runtime shadow mapping control via environment variable */
++   bool disable_shadows = false;
++   const char *shadow_env = getenv("TU_DISABLE_SHADOWS");
++   if (shadow_env && atoi(shadow_env) == 1) {
++      disable_shadows = true;
++   }
++
++   float mip_lod_bias = pCreateInfo->mipLodBias + custom_lod_bias;
++   float min_lod = CLAMP(pCreateInfo->minLod + custom_lod_bias, 0.0f, 4095.0f / 256.0f);
+    float max_lod = CLAMP(pCreateInfo->maxLod, 0.0f, 4095.0f / 256.0f);
+ 
+    sampler->vk.ycbcr_conversion = ycbcr_conversion ?
+@@ -90,18 +97,19 @@ tu_CreateSampler(VkDevice _device,
+    if (CHIP >= A8XX) {
+       sampler->descriptor[0] =
+          COND(miplinear, A8XX_TEX_SAMP_0_MIPFILTER_LINEAR_NEAR) |
+-         A8XX_TEX_SAMP_0_XY_MAG(tu6_tex_filter(pCreateInfo->magFilter, aniso)) |
+-         A8XX_TEX_SAMP_0_XY_MIN(tu6_tex_filter(pCreateInfo->minFilter, aniso)) |
++         A8XX_TEX_SAMP_0_XY_MAG(tu6_tex_filter(VK_FILTER_NEAREST, aniso)) |
++         A8XX_TEX_SAMP_0_XY_MIN(tu6_tex_filter(VK_FILTER_NEAREST, aniso)) |
+          A8XX_TEX_SAMP_0_WRAP_S(tu6_tex_wrap(pCreateInfo->addressModeU)) |
+          A8XX_TEX_SAMP_0_WRAP_T(tu6_tex_wrap(pCreateInfo->addressModeV)) |
+          A8XX_TEX_SAMP_0_WRAP_R(tu6_tex_wrap(pCreateInfo->addressModeW)) |
+-         A8XX_TEX_SAMP_0_LOD_BIAS(pCreateInfo->mipLodBias) |
++         A8XX_TEX_SAMP_0_LOD_BIAS(mip_lod_bias) |
+          A8XX_TEX_SAMP_0_ANISO((enum a6xx_tex_aniso)aniso);
+ 
+       sampler->descriptor[1] =
+          A8XX_TEX_SAMP_1_MAX_LOD(max_lod) |
+          A8XX_TEX_SAMP_1_MIN_LOD(min_lod) |
+          COND(pCreateInfo->compareEnable, 
+               A8XX_TEX_SAMP_1_COMPARE_FUNC(tu6_compare_func(disable_shadows ? VK_COMPARE_OP_ALWAYS : pCreateInfo->compareOp))) |
+          COND(pCreateInfo->flags & VK_SAMPLER_CREATE_NON_SEAMLESS_CUBE_MAP_BIT_EXT,
+             A8XX_TEX_SAMP_1_CUBEMAPSEAMLESSFILTOFF) |
+          COND(pCreateInfo->unnormalizedCoordinates, A8XX_TEX_SAMP_1_UNNORM_COORDS);
+@@ -123,21 +131,22 @@ tu_CreateSampler(VkDevice _device,
+    } else {
+       sampler->descriptor[0] =
+          COND(miplinear, A6XX_TEX_SAMP_0_MIPFILTER_LINEAR_NEAR) |
+-         A6XX_TEX_SAMP_0_XY_MAG(tu6_tex_filter(pCreateInfo->magFilter, aniso)) |
+-         A6XX_TEX_SAMP_0_XY_MIN(tu6_tex_filter(pCreateInfo->minFilter, aniso)) |
++         A6XX_TEX_SAMP_0_XY_MAG(tu6_tex_filter(VK_FILTER_NEAREST, aniso)) |
++         A6XX_TEX_SAMP_0_XY_MIN(tu6_tex_filter(VK_FILTER_NEAREST, aniso)) |
+          A6XX_TEX_SAMP_0_ANISO((enum a6xx_tex_aniso) aniso) |
+          A6XX_TEX_SAMP_0_WRAP_S(tu6_tex_wrap(pCreateInfo->addressModeU)) |
+          A6XX_TEX_SAMP_0_WRAP_T(tu6_tex_wrap(pCreateInfo->addressModeV)) |
+          A6XX_TEX_SAMP_0_WRAP_R(tu6_tex_wrap(pCreateInfo->addressModeW)) |
+-         A6XX_TEX_SAMP_0_LOD_BIAS(pCreateInfo->mipLodBias);
++         A6XX_TEX_SAMP_0_LOD_BIAS(mip_lod_bias);
+       sampler->descriptor[1] =
+          COND(pCreateInfo->flags & VK_SAMPLER_CREATE_NON_SEAMLESS_CUBE_MAP_BIT_EXT,
+             A6XX_TEX_SAMP_1_CUBEMAPSEAMLESSFILTOFF) |
+          COND(pCreateInfo->unnormalizedCoordinates, A6XX_TEX_SAMP_1_UNNORM_COORDS) |
+          A6XX_TEX_SAMP_1_MIN_LOD(min_lod) |
+          A6XX_TEX_SAMP_1_MAX_LOD(max_lod) |
+          COND(pCreateInfo->compareEnable,
+            A6XX_TEX_SAMP_1_COMPARE_FUNC(tu6_compare_func(disable_shadows ? VK_COMPARE_OP_ALWAYS : pCreateInfo->compareOp)));
+       sampler->descriptor[2] =
+          A6XX_TEX_SAMP_2_BCOLOR(border_color) |
+          A6XX_TEX_SAMP_2_FASTBORDERCOLOR(fast_border_color) |

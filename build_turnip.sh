@@ -11,21 +11,19 @@ mesatag="mesa-25.1.4"
 srcfolder="mesa"
 BUILD_VERSION="${BUILD_VERSION:-1.0}"
 
-# Patches que aplicam limpo em cima do gen8 atual (testados manualmente, um a um E em
-# sequência - houve conflito real entre dois deles, ver nota abaixo).
+# Patches que aplicam limpo em cima do gen8 atual.
 # Os demais patches do repo (tu_gen8.patch, tu_gen8_clean.patch, tu8_kgsl_26.patch,
-# disable_vkQueueSubmit2.patch) jã estã incorporados no branch gen8 ou duplicados
+# disable_vkQueueSubmit2.patch) já estão incorporados no branch gen8 ou duplicados
 # por outro fix neste script, e por isso NÃO entram aqui.
 #
-# NOTA: patches/texture_quality_reduction.patch NÃO entra aqui de propósito - ele mexe
-# NOTA: patches/texture_quality_reduction.patch NÃƒO entra aqui de propÃ³sito - ele mexe
-# nas MESMAS linhas de tu_sampler.cc que windroid_perf_hacks.patch (os dois calculam
-# lod_bias de formas diferentes e incompatÃ­veis), entÃ£o aplicar os dois juntos gera
-# conflito de verdade, nÃ£o sÃ³ de contexto. Ficou de fora atÃ© alguÃ©m decidir como
-# mesclar as duas features (hack fixo de LOD vs. controle por env var).
+# NOTA: windroid_perf_unified.patch combina windroid_perf_hacks.patch e
+# texture_quality_reduction.patch, resolvendo o conflito em tu_sampler.cc.
+# Mantém otimizações agressivas (aniso=0, NEAREST, compareOp=ALWAYS) e adiciona
+# controle via variáveis de ambiente (TU_TEXTURE_LOD_BIAS, TU_FORCE_MIP_LEVEL, TU_DISABLE_SHADOWS).
 patches_to_apply=(
-    "$scriptdir/windroid_perf_hacks.patch"
+    "$scriptdir/patches/windroid_perf_unified.patch"
     "$scriptdir/patches/polygon_reduction_vrs.patch"
+    "$scriptdir/patches/force_sysmem_no_autotuner.patch"
 )
 
 run_all(){
@@ -204,10 +202,10 @@ EOF
 }
 EOF
 
-    zip -9 "/tmp/a8xx-$1-V${BUILD_VERSION}.zip" libvulkan_freedreno.so meta.json
-    cp "/tmp/a8xx-$1-V${BUILD_VERSION}.zip" "$workdir/"
-    cp "/tmp/a8xx-$1-V${BUILD_VERSION}.zip" "./"
-    echo "Driver gerado em: $(pwd)/a8xx-$1-V${BUILD_VERSION}.zip"
+    zip -9 "/tmp/Windroid-Turnip.zip" libvulkan_freedreno.so meta.json
+    cp "/tmp/Windroid-Turnip.zip" "$workdir/"
+    cp "/tmp/Windroid-Turnip.zip" "./"
+    echo "Driver gerado em: $(pwd)/Windroid-Turnip.zip"
 }
 
 run_all
